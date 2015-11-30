@@ -9,8 +9,10 @@ import android.util.Pair;
 import android.widget.ListView;
 import android.widget.RelativeLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.google.common.collect.FluentIterable;
+import com.jakewharton.rxbinding.widget.RxAdapterView;
 import com.jakewharton.rxbinding.widget.RxTextView;
 import com.tomtom.rxjava.MyAdapter.CombinedResult;
 import com.tomtom.rxjava.search.retrofit.RestAPIs;
@@ -77,14 +79,24 @@ public class MainActivity extends RxActivity {
                         .subscribe(
                                 results -> {
                                     Log.d(TAG, "subscribe.onNext");
-                                    editTextQuery.post(() -> editTextQuery.setBackgroundDrawable(null));
+                                    editTextQuery.setBackgroundDrawable(null);
                                     listAdapter.setResultList(results);
                                 },
-                                (throwable -> {
+                                throwable -> {
                                     Log.e(TAG, "subscribe.onError", throwable);
-                                }),
+                                },
                                 () -> Log.d(TAG, "subscribe.onCompleted")
                         );
+
+        RxAdapterView.itemClicks(listViewResults)
+                .observeOn(AndroidSchedulers.mainThread())
+                .<Integer>compose(RxLifecycle.bindActivity(lifecycle()))
+                .<Integer>subscribe(new Action1<Integer>() {
+            @Override
+            public void call(Integer position) {
+                Toast.makeText(MainActivity.this, "Clicked " + listAdapter.getItem(position.intValue()), Toast.LENGTH_SHORT).show();
+            }
+        });
 
         compositeSubscription.add(subscription);
     }
@@ -94,16 +106,13 @@ public class MainActivity extends RxActivity {
     private Observable<List<CombinedResult>> getSearchStream() {
         return RxTextView.textChanges(editTextQuery)
                 .subscribeOn(AndroidSchedulers.mainThread())
-                .skip(1)
-                .map(charSequence -> {
-                    return charSequence.toString();
-                })
-                .filter((text) -> {
-                    return text.length() > 1;
-                })
+                .map(CharSequence::toString)
+                .filter((text) -> text.length() > 1)
                 .debounce(150, TimeUnit.MILLISECONDS)
                 .subscribeOn(Schedulers.io())
-                .switchMap((text) -> Observable.mergeDelayError(decartaSearch(text), mapkitSearch(text)).lift(new OperatorMerge2InOne<>()))
+                .switchMap(
+                        (text) -> Observable.mergeDelayError(decartaSearch(text), mapkitSearch(text))
+                                .lift(new OperatorMerge2InOne<>()))
                 .doOnError(onError -> {
                     Log.d(TAG, "map.onError", onError);
                     editTextQuery.post(() -> editTextQuery.setBackgroundColor(getResources().getColor(R.color.colorError)));
@@ -112,7 +121,7 @@ public class MainActivity extends RxActivity {
                     snackbar.show();
                 })
                 .onErrorResumeNext(Observable.create(
-                        (subscriber) -> getSearchStream().subscribe(subscriber)
+                        subscriber -> getSearchStream().subscribe(subscriber)
                 ))
                 .<List<CombinedResult>>compose(RxLifecycle.bindUntilActivityEvent(lifecycle(), ActivityEvent.PAUSE));
     }
@@ -144,15 +153,13 @@ public class MainActivity extends RxActivity {
 
     @NonNull
     private Func1<Observable<? extends Throwable>, Observable<Long>> createExponentialBackOff() {
-        return throwable -> {
-            return throwable.zipWith(Observable.range(0, 3), (throwable2, counter) -> {
-                return Pair.create(throwable2, counter);
-            }).flatMap(tuple -> {
-                if(tuple.second == 2)
-                    return Observable.error(tuple.first);
-                return Observable.timer((int) Math.pow(2, tuple.second), TimeUnit.SECONDS);
-            });
-        };
+        return throwables -> throwables.zipWith(Observable.range(0, 3), (throwable, counter) -> {
+            return Pair.create(throwable, counter);
+        }).flatMap(tuple -> {
+            if (tuple.second == 2)
+                return Observable.error(tuple.first);
+            return Observable.timer((int) Math.pow(2, tuple.second), TimeUnit.SECONDS);
+        });
     }
 
     @Override
